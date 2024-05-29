@@ -1,0 +1,8 @@
+*** Cannot find timeout command; proceeding without timeouts.
+*** Starting wc test.
+--- wc test: PASS
+*** Starting indexer test.
+--- indexer output is not the same as mr-correct-indexer.txt
+--- indexer test: FAIL
+*** Starting map parallelism test.
+--- map parallelism test: PASS
