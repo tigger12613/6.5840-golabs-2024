@@ -722,8 +722,8 @@ func (rf *Raft) leaderAppendEntry(peer int, args AppendEntriesArgs) {
 				return
 			}
 			if reply.Success {
-				rf.nextIndex[i] += len(args.Log)
-				rf.matchIndex[i] = rf.nextIndex[i] - 1
+				rf.nextIndex[i] = args.Log[len(args.Log)-1].Index + 1
+				rf.matchIndex[i] = args.Log[len(args.Log)-1].Index
 				// check is log send to most followers, we need to check all index that give to follower in this rpc
 				for candidateIndexToCommit := rf.commitIndex + 1; candidateIndexToCommit <= args.Log[len(args.Log)-1].Index; candidateIndexToCommit++ {
 					_, candidatelog := rf.findLogByIndex(candidateIndexToCommit)
