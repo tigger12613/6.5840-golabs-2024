@@ -126,7 +126,7 @@ func (rf *Raft) persist() {
 	// rf.persister.Save(raftstate, nil)
 	// DPrintf("[Persist]")
 	// rf.printCurrentStatus()
-	DPrintf("[Persist] me:%v, currrent term: %v, vote for: %v, logs: %+v", rf.me, rf.CurrentTerm, rf.VotedFor, rf.Logs)
+	//DPrintf("[Persist] me:%v, currrent term: %v, vote for: %v, logs: %+v\n", rf.me, rf.CurrentTerm, rf.VotedFor, rf.Logs)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.CurrentTerm)
@@ -303,7 +303,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		reply.Success = false
 		return
 	}
-	DPrintf("[InstallSnapshot] %v %+v", rf.me, args)
+	DPrintf("[InstallSnapshot] %v %+v\n", rf.me, args)
 	if args.Term > rf.CurrentTerm {
 		rf.changeState(Follower)
 		rf.setCurrentTerm(args.Term)
@@ -378,7 +378,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.CurrentTerm
 		return
 	}
-	rf.electionTimer = time.Now()
+	rf.resetElectionTimer()
 	rf.changeState(Follower)
 	if rf.CurrentTerm < args.Term {
 		rf.setCurrentTerm(args.Term)
@@ -452,7 +452,7 @@ func (rf *Raft) applyEntryDaemon() {
 		rf.mu.Lock()
 		if rf.commitIndex <= rf.lastApplied {
 			rf.mu.Unlock()
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(1 * time.Millisecond)
 			continue
 		}
 		rf.printCurrentStatusStr("WhenApply")
@@ -472,7 +472,7 @@ func (rf *Raft) applyEntryDaemon() {
 		if newApply.Command != nil {
 			rf.applyCh <- newApply
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
@@ -516,7 +516,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.Logs = append(rf.Logs, newLog)
 	rf.persist()
-	DPrintf("[New] server %v get new Log %+v ", rf.me, newLog)
+	DPrintf("[New] server %v get new Log %+v \n", rf.me, newLog)
 	//rf.printCurrentStatus()
 	index = newLog.Index
 	return index, term, isLeader
@@ -718,7 +718,7 @@ func (rf *Raft) leaderAppendEntry(peer int, args AppendEntriesArgs) {
 			DPrintf("[Callback] leader %v get %+v\n", rf.me, reply)
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
-			if rf.state != Leader {
+			if rf.state != Leader || rf.CurrentTerm != args.Term {
 				return
 			}
 			if reply.Success {
@@ -847,7 +847,7 @@ func (rf *Raft) printCurrentStatusStr(str string) {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	DPrintf("=======================Start=========================")
+	DPrintf("=======================Start=========================\n")
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
