@@ -396,7 +396,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	sIndex, log := rf.findLogByIndex(args.PrevLogIndex)
 	if log.Term != args.PrevLogTerm {
-		rf.Logs = rf.Logs[0:sIndex]
+		//rf.Logs = rf.Logs[0:sIndex]
 		rf.persist()
 		reply.Success = false
 		reply.Term = rf.CurrentTerm
@@ -424,10 +424,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Term = rf.CurrentTerm
 		return
 	}
-
-	rf.Logs = rf.Logs[0 : sIndex+1]
-	rf.Logs = append(rf.Logs, args.Log...)
-	rf.persist()
+	if rf.lastLog().Term < args.Term || rf.lastLog().Index < args.Log[len(args.Log)-1].Index {
+		rf.Logs = rf.Logs[0 : sIndex+1]
+		rf.Logs = append(rf.Logs, args.Log...)
+		rf.persist()
+	}
 	// refresh commit index
 	if args.LeaderCommit > rf.commitIndex {
 		if args.LeaderCommit > rf.lastLog().Index {
@@ -679,7 +680,19 @@ func (rf *Raft) leaderProcess() {
 			//DPrintf("%v, heartbeat %v", rf.me, i)
 		}
 		//wg.Wait()
-		time.Sleep(100 * time.Millisecond)
+		rf.mu.Lock()
+		lastIndex := rf.lastLog().Index
+		rf.mu.Unlock()
+		for i := 0; i < 100; i++ {
+			rf.mu.Lock()
+			if lastIndex == rf.lastLog().Index {
+				rf.mu.Unlock()
+				time.Sleep(1 * time.Millisecond)
+			} else {
+				rf.mu.Unlock()
+				break
+			}
+		}
 		rf.mu.Lock()
 		valid = rf.state == Leader && rf.killed() == false
 		rf.resetElectionTimer()
