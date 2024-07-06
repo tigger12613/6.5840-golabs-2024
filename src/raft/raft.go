@@ -182,7 +182,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if index == 0 {
+	if index <= rf.firstLog().Index {
 		return
 	}
 	sIndex, log := rf.findLogByIndex(index)
@@ -339,9 +339,11 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.lastApplied = rf.snapshotIndex
 	rf.commitIndex = rf.snapshotIndex
 	rf.persist()
-	rf.applyCh <- newApply
 	reply.Term = rf.CurrentTerm
 	reply.Success = true
+	go func(newApply ApplyMsg) {
+		rf.applyCh <- newApply
+	}(newApply)
 }
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
@@ -383,6 +385,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.CurrentTerm < args.Term {
 		rf.setCurrentTerm(args.Term)
 	}
+	if args.PrevLogIndex < rf.firstLog().Index {
+		reply.Term, reply.Success = rf.CurrentTerm, false
+		reply.XTerm = rf.lastLog().Term
+		reply.XIntex = rf.lastLog().Index
+		return
+	}
 
 	// if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	// means follower is stale, need to catch up
@@ -397,7 +405,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	sIndex, log := rf.findLogByIndex(args.PrevLogIndex)
 	if log.Term != args.PrevLogTerm {
 		//rf.Logs = rf.Logs[0:sIndex]
-		rf.persist()
+		//rf.persist()
 		reply.Success = false
 		reply.Term = rf.CurrentTerm
 		i := sIndex - 1
@@ -831,6 +839,9 @@ func (rf *Raft) firstLog() Log {
 }
 func (rf *Raft) resetElectionTimer() {
 	rf.electionTimer = time.Now()
+}
+func (rf *Raft) GetPersistSize() int {
+	return rf.persister.RaftStateSize()
 }
 
 // func (rf *Raft) printCurrentStatus() {

@@ -104,6 +104,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				} else if reply.Err == ErrNoKey {
 					panic("put append no key")
+				} else if reply.Err == ErrWrongLeader {
+					DPrintf("Client: put wrong leader %+v\n", args)
 				}
 			}
 		} else if op == "Append" {
@@ -115,6 +117,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				} else if reply.Err == ErrNoKey {
 					panic("put append no key")
+				} else if reply.Err == ErrWrongLeader {
+					DPrintf("Client: append wrong leader %+v\n", args)
 				}
 			}
 		}

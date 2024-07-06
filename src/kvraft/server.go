@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -43,24 +44,19 @@ type KVServer struct {
 	// Your definitions here.
 	keyValueMap      map[string]string
 	rpcs             map[int]chan Respond
-	committedRequest map[int]map[int]bool
+	committedRequest map[int]int
 	lastReplyIndex   int
 }
 
 func (kv *KVServer) isRequestCommitted(clientId int, requestId int) bool {
-	_, existClient := kv.committedRequest[clientId]
-	if existClient {
-		_, existRequest := kv.committedRequest[clientId][requestId]
-		return existRequest
+	lastResponse, existClient := kv.committedRequest[clientId]
+	if existClient && lastResponse >= requestId {
+		return true
 	}
 	return false
 }
 func (kv *KVServer) newCommited(clientId int, requestId int) {
-	_, existClient := kv.committedRequest[clientId]
-	if !existClient {
-		kv.committedRequest[clientId] = make(map[int]bool)
-	}
-	kv.committedRequest[clientId][requestId] = true
+	kv.committedRequest[clientId] = requestId
 }
 func (kv *KVServer) getRpcCh(index int) chan Respond {
 	if _, ok := kv.rpcs[index]; !ok {
@@ -204,79 +200,97 @@ func (kv *KVServer) killed() bool {
 func (kv *KVServer) commitProcess() {
 	for !kv.killed() {
 		if apply, ok := <-kv.applyCh; ok {
-			DPrintf("Server:%2d, Commit %+v", kv.me, apply)
-			kv.mu.Lock()
-			opCommand := apply.Command.(Op)
-			if apply.CommandIndex <= kv.lastReplyIndex {
-				kv.mu.Unlock()
-				continue
-			}
-			kv.lastReplyIndex = apply.CommandIndex
-			if !kv.isRequestCommitted(opCommand.ClientId, opCommand.RequestId) {
-				switch opCommand.Command {
-				case PutCommand:
-					kv.keyValueMap[opCommand.Key] = opCommand.Value
-				case AppendCommand:
-					kv.keyValueMap[opCommand.Key] += opCommand.Value
+			if apply.CommandValid {
+				DPrintf("Server:%2d, Commit %+v", kv.me, apply)
+				kv.mu.Lock()
+				opCommand := apply.Command.(Op)
+				if apply.CommandIndex <= kv.lastReplyIndex {
+					kv.mu.Unlock()
+					continue
 				}
-				kv.newCommited(opCommand.ClientId, opCommand.RequestId)
-			}
-
-			ch, exist := kv.rpcs[apply.CommandIndex]
-			_, isLeader := kv.rf.GetState()
-			res := Respond{Value: "", Err: ErrWrongLeader}
-			if isLeader {
-				switch opCommand.Command {
-				case GetCommand:
-					val, exist := kv.keyValueMap[opCommand.Key]
-					if exist {
-						res.Value, res.Err = val, OK
-					} else {
-						res.Value, res.Err = "", ErrNoKey
+				kv.lastReplyIndex = apply.CommandIndex
+				if !kv.isRequestCommitted(opCommand.ClientId, opCommand.RequestId) {
+					switch opCommand.Command {
+					case PutCommand:
+						kv.keyValueMap[opCommand.Key] = opCommand.Value
+					case AppendCommand:
+						if _, exist := kv.keyValueMap[opCommand.Key]; !exist {
+							kv.keyValueMap[opCommand.Key] = ""
+						}
+						kv.keyValueMap[opCommand.Key] += opCommand.Value
 					}
-				case PutCommand:
-					res.Err = OK
-				case AppendCommand:
-					res.Err = OK
+					kv.newCommited(opCommand.ClientId, opCommand.RequestId)
 				}
-				if exist {
-					ch <- res
+
+				ch, exist := kv.rpcs[apply.CommandIndex]
+				_, isLeader := kv.rf.GetState()
+				res := Respond{Value: "", Err: ErrWrongLeader}
+				if isLeader {
+					switch opCommand.Command {
+					case GetCommand:
+						val, exist := kv.keyValueMap[opCommand.Key]
+						if exist {
+							res.Value, res.Err = val, OK
+						} else {
+							res.Value, res.Err = "", ErrNoKey
+						}
+					case PutCommand:
+						res.Err = OK
+					case AppendCommand:
+						res.Err = OK
+					}
+					if exist {
+						go func(ch chan Respond, res Respond) {
+							ch <- res
+						}(ch, res)
+					}
 				}
+				if kv.maxraftstate > 0 && kv.rf.GetPersistSize() > kv.maxraftstate {
+					kv.takeSnapshot(apply.CommandIndex)
+				}
+				kv.mu.Unlock()
+
+			} else if apply.SnapshotValid {
+				kv.mu.Lock()
+				if apply.SnapshotIndex <= kv.lastReplyIndex {
+					kv.mu.Unlock()
+					continue
+				}
+				kv.lastReplyIndex = apply.SnapshotIndex
+				kv.restoreSnapshot(apply.Snapshot)
+				kv.mu.Unlock()
 			}
-			kv.mu.Unlock()
 		} else {
-			break
+			panic("channel close error")
 		}
 		//time.Sleep(1 * time.Millisecond)
 	}
 }
 
-func (kv *KVServer) cleanup() {
-	if _, isLeader := kv.rf.GetState(); !isLeader {
-		for _, v := range kv.rpcs {
-			v <- Respond{Value: "", Err: ErrWrongLeader}
-		}
+func (kv *KVServer) takeSnapshot(index int) {
+	KVSnapshot := KVSnapshot{KeyValueMap: kv.keyValueMap, CommittedRequest: kv.committedRequest}
+	w := new(bytes.Buffer)
+	enc := labgob.NewEncoder(w)
+	enc.Encode(KVSnapshot)
+	kv.rf.Snapshot(index, w.Bytes())
+}
+func (kv *KVServer) restoreSnapshot(snapshot []byte) {
+	if snapshot == nil || len(snapshot) == 0 {
+		return
 	}
-	kv.rpcs = make(map[int]chan Respond)
+	var b bytes.Buffer
+	dec := labgob.NewDecoder(&b)
+	b.Write(snapshot)
+	var data KVSnapshot
+	err := dec.Decode(&data)
+	if err != nil {
+		panic("Decode error\n")
+	}
+	kv.keyValueMap = data.KeyValueMap
+	kv.committedRequest = data.CommittedRequest
 }
 
-// func (kv *KVServer) garbageCleanProcess() {
-// 	for !kv.killed() {
-// 		kv.mu.Lock()
-// 		_, isFollower := kv.rf.GetState()
-// 		for k := range kv.rpcs {
-// 			if k < kv.lastId || isFollower {
-// 				close(kv.rpcs[k].channel)
-// 				delete(kv.rpcs, k)
-// 			}
-// 		}
-// 		//kv.snap()
-// 		kv.mu.Unlock()
-// 		time.Sleep(300 * time.Millisecond)
-// 	}
-// }
-
-func (kv *KVServer) snap() {
+func (kv *KVServer) show() {
 	DPrintf("Server%2d,keyValueMap:%+v,rpcs:%+v, lastReplyIndex:%v", kv.me, kv.keyValueMap, kv.rpcs, kv.lastReplyIndex)
 }
 
@@ -295,6 +309,7 @@ func (kv *KVServer) snap() {
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
+	DPrintf("Server%2d Start\n", me)
 	labgob.Register(Op{})
 
 	kv := new(KVServer)
@@ -307,10 +322,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
-
 	kv.keyValueMap = make(map[string]string)
 	kv.rpcs = make(map[int]chan Respond)
-	kv.committedRequest = make(map[int]map[int]bool)
+	kv.committedRequest = make(map[int]int)
+	kv.restoreSnapshot(persister.ReadSnapshot())
 
 	go kv.commitProcess()
 	//go kv.garbageCleanProcess()

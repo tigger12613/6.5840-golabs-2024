@@ -60,3 +60,8 @@ type Respond struct {
 	Err   Err
 	Value string
 }
+
+type KVSnapshot struct {
+	KeyValueMap      map[string]string
+	CommittedRequest map[int]int
+}
