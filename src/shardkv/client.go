@@ -8,11 +8,14 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "6.5840/labrpc"
-import "crypto/rand"
-import "math/big"
-import "6.5840/shardctrler"
-import "time"
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
+
+	"6.5840/labrpc"
+	"6.5840/shardctrler"
+)
 
 // which shard is a key in?
 // please use this function,
@@ -38,6 +41,9 @@ type Clerk struct {
 	config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	leaderId      map[int]int
+	clientId      int
+	nextRequestId int
 }
 
 // the tester calls MakeClerk.
@@ -52,6 +58,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.leaderId = make(map[int]int)
+	ck.clientId = int(nrand())
 	return ck
 }
 
@@ -60,8 +68,9 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
+	args := GetArgs{CliendId: ck.clientId, RequestId: ck.nextRequestId}
 	args.Key = key
+	ck.nextRequestId++
 
 	for {
 		shard := key2shard(key)
@@ -73,6 +82,7 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+					DPrintf("Cliend:%d, Key:%s, Get:%s\n", ck.clientId, key, reply.Value)
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
@@ -92,11 +102,11 @@ func (ck *Clerk) Get(key string) string {
 // shared by Put and Append.
 // You will have to modify this function.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
+	args := PutAppendArgs{CliendId: ck.clientId, RequestId: ck.nextRequestId}
 	args.Key = key
 	args.Value = value
 	args.Op = op
-
+	ck.nextRequestId++
 
 	for {
 		shard := key2shard(key)
@@ -107,6 +117,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
+					DPrintf("Cliend:%d, %s:%s:%s\n", ck.clientId, op, args.Key, args.Value)
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {

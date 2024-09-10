@@ -403,7 +403,12 @@ func (sc *ShardCtrler) commitProcess() {
 						if operation.Num == -1 {
 							res.Config = sc.lastConfig()
 						} else {
-							res.Config = sc.configs[operation.Num]
+							if operation.Num >= len(sc.configs) {
+								res.Config = sc.configs[len(sc.configs)-1]
+							} else {
+								res.Config = sc.configs[operation.Num]
+							}
+
 						}
 					default:
 					}
