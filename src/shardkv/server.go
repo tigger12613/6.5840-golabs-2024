@@ -35,6 +35,7 @@ type Op struct {
 	NewShards        map[int]*Shard
 	CommittedRequest map[int]int
 	GiveShards       int
+	Num              int
 }
 
 type ShardKV struct {
@@ -164,8 +165,9 @@ func (kv *ShardKV) PushShard(args *PushShardArgs, reply *PushShardReply) {
 	// }
 	op := Op{
 		Command:          NewShard,
+		Num:              args.Config.Num,
 		NewShards:        deepCopy(args.Shards),
-		CommittedRequest: args.CommittedRequest,
+		CommittedRequest: deepCopyIntMap(args.CommittedRequest),
 	}
 	index, _, ok := kv.rf.Start(op)
 	if !ok {
@@ -261,31 +263,42 @@ func (kv *ShardKV) commitProcess() {
 								}
 							}
 						}
+						for k, v := range kv.shards {
+							if v.ReadyToServe && kv.currentConfig.Shards[k] == kv.gid {
+								v.Num = kv.currentConfig.Num
+							}
+						}
 						if isLeader {
-							DPrintf("Gid: %2d, Server:%2d, Configchange:%+v", kv.gid, kv.me, kv.currentConfig)
-							DPrintf("Gid: %2d, Server:%2d, shards:%+v", kv.gid, kv.me, kv.shards)
+							DPrintf("Gid: %2d, Configchange:%+v", kv.gid, kv.currentConfig)
+							DPrintf("Gid: %2d, shards:%+v", kv.gid, kv.shards)
 							//go kv.giveShards()
 						}
 					case NewShard:
-						if isLeader {
-							DPrintf("Gid: %2d, Server:%2d, GetShard:%+v", kv.gid, kv.me, opCommand.NewShards)
-						}
-						for k, v := range opCommand.NewShards {
-							if kv.shards[k].Num < v.Num {
-								kv.shards[k] = v.deepCopy()
-								kv.shards[k].ReadyToServe = true
+						if kv.currentConfig.Num == opCommand.Num {
+							for k, v := range opCommand.NewShards {
+								if kv.shards[k].Num < v.Num {
+									kv.shards[k] = v.deepCopy()
+									kv.shards[k].Num = kv.currentConfig.Num
+									kv.shards[k].ReadyToServe = true
+									if isLeader {
+										DPrintf("Gid: %2d, GetShard:%+v", kv.gid, opCommand.NewShards)
+									}
+								}
 							}
-						}
-						for clientId, id := range opCommand.CommittedRequest {
-							if kv.committedRequest[clientId] < id {
-								kv.committedRequest[clientId] = id
+							for clientId, id := range opCommand.CommittedRequest {
+								if kv.committedRequest[clientId] < id {
+									kv.committedRequest[clientId] = id
+								}
 							}
 						}
 					case GiveShard:
-						if isLeader {
-							DPrintf("Gid: %2d, Server:%2d, GiveShard:%+v", kv.gid, kv.me, opCommand.GiveShards)
+						if opCommand.Num == kv.currentConfig.Num {
+							if isLeader {
+								DPrintf("Gid: %2d, Num:%d, GiveShard:%+v", kv.gid, opCommand.Num, opCommand.GiveShards)
+							}
+							kv.shards[opCommand.GiveShards].KV = make(map[string]string)
+							kv.shards[opCommand.GiveShards].ReadyToServe = false
 						}
-						kv.shards[opCommand.GiveShards].ReadyToServe = false
 					}
 				}
 				ch, exist := kv.rpcs[apply.CommandIndex]
@@ -303,16 +316,14 @@ func (kv *ShardKV) commitProcess() {
 								} else {
 									res.Value, res.Err = "", ErrNoKey
 								}
-								//DPrintf("Gid: %2d, Server:%2d, Key:%s, Get:%s\n", kv.gid, kv.me, opCommand.Key, kv.shards[belongShard].KV[opCommand.Key])
-								DPrintf("Gid: %2d, Server:%2d, Key:%s, Get:%s\n", kv.gid, kv.me, opCommand.Key, shardsToString(kv.shards))
-
+								DPrintf("Gid: %2d, Key:%s, Get:%s\n", kv.gid, opCommand.Key, shardsToString(kv.shards))
 							case PutCommand:
-								DPrintf("Gid: %2d, Server:%2d, Key:%s, Put:%s\n", kv.gid, kv.me, opCommand.Key, kv.shards[belongShard].KV[opCommand.Key])
-
+								DPrintf("Gid: %2d, Key:%s, Put:%s\n", kv.gid, opCommand.Key, kv.shards[belongShard].KV[opCommand.Key])
 								res.Err = OK
 							case AppendCommand:
-								DPrintf("Gid: %2d, Server:%2d, Key:%s, Append:%s\n", kv.gid, kv.me, opCommand.Key, kv.shards[belongShard].KV[opCommand.Key])
-
+								//DPrintf("Gid: %2d, Key:%s, Append:%s\n", kv.gid, opCommand.Key, kv.shards[belongShard].KV[opCommand.Key])
+								DPrintf("Gid: %2d, Key:%s, Append:%s\n", kv.gid, opCommand.Key, kv.shards[belongShard].KV[opCommand.Key])
+								DPrintf("Gid: %2d, Key:%s, cliendId:%d, rId:%d\n", kv.gid, opCommand.Key, opCommand.ClientId, opCommand.RequestId)
 								res.Err = OK
 							}
 						} else {
@@ -321,7 +332,11 @@ func (kv *ShardKV) commitProcess() {
 					} else {
 						switch opCommand.Command {
 						case NewShard:
-							res.Err = OK
+							if kv.currentConfig.Num >= opCommand.Num {
+								res.Err = OK
+							} else {
+								res.Err = ErrStaleConfig
+							}
 						default:
 							res.Err = OK
 						}
@@ -356,10 +371,27 @@ func (kv *ShardKV) commitProcess() {
 func (kv *ShardKV) checkConfigChangeProcess() {
 	for !kv.killed() {
 		kv.mu.Lock()
-		tmp := kv.sc.Query(kv.currentConfig.Num + 1)
-		if tmp.Num > kv.currentConfig.Num {
-			//DPrintf("Gid: %2d, Server: %2d, NewConfig: %+v", kv.gid, kv.me, tmp)
-			kv.newConfig(tmp)
+		_, isLeader := kv.rf.GetState()
+		if isLeader {
+			tmp := kv.sc.Query(kv.currentConfig.Num + 1)
+			if tmp.Num > kv.currentConfig.Num {
+				isReadyToNextConfig := true
+				for i, gid := range kv.currentConfig.Shards {
+					if gid != kv.gid && kv.shards[i].ReadyToServe {
+						isReadyToNextConfig = false
+						break
+					}
+					if gid == kv.gid && !kv.shards[i].ReadyToServe {
+						isReadyToNextConfig = false
+						break
+					}
+				}
+				if isReadyToNextConfig {
+					//DPrintf("Gid: %2d, Server: %2d, NewConfig: %+v", kv.gid, kv.me, tmp)
+					kv.newConfig(tmp)
+				}
+			}
+			//DPrintf("Gid:%d,Server:%2d, Alive\n", kv.gid, kv.me)
 		}
 		kv.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
@@ -376,27 +408,42 @@ func (kv *ShardKV) giveShardsProcess() {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+func (kv *ShardKV) aliveCheckProcess() {
+	for !kv.killed() {
+		kv.mu.Lock()
+		kv.show()
+		kv.mu.Unlock()
+		time.Sleep(300 * time.Millisecond)
+	}
+}
 func (kv *ShardKV) giveShards(configNum int) {
 	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	for i, shard := range kv.shards {
 		targetGid := kv.currentConfig.Shards[i]
 		if kv.currentConfig.Num != configNum {
-			break
+			return
 		}
 		if targetGid != kv.gid && shard.ReadyToServe {
-			shard.Num = kv.currentConfig.Num
 			tmp := make(map[int]*Shard)
 			tmp[i] = shard.deepCopy()
 			for _, targetName := range kv.currentConfig.Groups[targetGid] {
-				args := PushShardArgs{Config: kv.currentConfig, Shards: tmp, CommittedRequest: kv.committedRequest}
+				if kv.currentConfig.Num != configNum {
+					return
+				}
+				args := PushShardArgs{Config: kv.currentConfig, Shards: tmp, CommittedRequest: deepCopyIntMap(kv.committedRequest)}
 				reply := PushShardReply{}
 				kv.mu.Unlock()
 				ok := kv.make_end(targetName).Call("ShardKV.PushShard", &args, &reply)
 				kv.mu.Lock()
+				if kv.currentConfig.Num != configNum {
+					return
+				}
 				if ok && reply.Err == OK {
 					op := Op{
 						Command:    GiveShard,
 						GiveShards: i,
+						Num:        configNum,
 					}
 					kv.rf.Start(op)
 					break
@@ -404,11 +451,9 @@ func (kv *ShardKV) giveShards(configNum int) {
 				if ok && (reply.Err == ErrWrongGroup) {
 					break
 				}
-
 			}
 		}
 	}
-	kv.mu.Unlock()
 }
 
 func (kv *ShardKV) takeSnapshot(index int) {
@@ -437,7 +482,7 @@ func (kv *ShardKV) restoreSnapshot(snapshot []byte) {
 }
 
 func (kv *ShardKV) show() {
-	DPrintf("Server%2d,keyValueMap:%+v,rpcs:%+v, lastReplyIndex:%v", kv.me, kv.shards, kv.rpcs, kv.lastReplyIndex)
+	DPrintf("Gid:%d, keyValueMap:%+v,lastReplyIndex:%v", kv.gid, kv.shards, kv.lastReplyIndex)
 }
 
 // the tester calls Kill() when a ShardKV instance won't
@@ -516,6 +561,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	go kv.commitProcess()
 	go kv.checkConfigChangeProcess()
 	go kv.giveShardsProcess()
+	go kv.aliveCheckProcess()
 
 	return kv
 }

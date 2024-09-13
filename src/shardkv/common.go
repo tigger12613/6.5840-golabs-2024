@@ -94,6 +94,7 @@ type Shard struct {
 
 func (shard *Shard) deepCopy() *Shard {
 	newShard := Shard{
+		Num:          0,
 		KV:           make(map[string]string),
 		ReadyToServe: false,
 	}
@@ -105,7 +106,8 @@ func (shard *Shard) deepCopy() *Shard {
 	return &newShard
 }
 func (shard *Shard) String() string {
-	return fmt.Sprintf("{Num:%d, KV:%+v, ReadyToServe:%t}", shard.Num, shard.KV, shard.ReadyToServe)
+	//return fmt.Sprintf("{Num:%d, ReadyToServe:%t, KV:%+v}", shard.Num, shard.ReadyToServe, shard.KV)
+	return fmt.Sprintf("{Num:%d, ReadyToServe:%t}", shard.Num, shard.ReadyToServe)
 }
 func shardsToString(shards map[int]*Shard) string {
 	var s string
@@ -118,6 +120,13 @@ func deepCopy(oldMap map[int]*Shard) map[int]*Shard {
 	newMap := make(map[int]*Shard)
 	for k, v := range oldMap {
 		newMap[k] = v.deepCopy()
+	}
+	return newMap
+}
+func deepCopyIntMap(oldMap map[int]int) map[int]int {
+	newMap := make(map[int]int)
+	for k, v := range oldMap {
+		newMap[k] = v
 	}
 	return newMap
 }

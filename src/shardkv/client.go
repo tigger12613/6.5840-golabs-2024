@@ -60,6 +60,7 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	// You'll have to add code here.
 	ck.leaderId = make(map[int]int)
 	ck.clientId = int(nrand())
+	ck.nextRequestId = 1
 	return ck
 }
 
@@ -82,7 +83,7 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					DPrintf("Cliend:%d, Key:%s, Get:%s\n", ck.clientId, key, reply.Value)
+					DPrintf("Cliend:%d, rId%d, Key:%s, Get:%s\n", args.CliendId, args.RequestId, key, reply.Value)
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
@@ -117,7 +118,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
-					DPrintf("Cliend:%d, %s:%s:%s\n", ck.clientId, op, args.Key, args.Value)
+					DPrintf("Cliend:%d, rId%d, %s:%s:%s\n", args.CliendId, args.RequestId, op, args.Key, args.Value)
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
